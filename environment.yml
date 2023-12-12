@@ -1,0 +1,28 @@
+name: torch-ngp
+channels:
+  - pytorch
+  - conda-forge
+dependencies:
+  - python
+  - cudatoolkit=11.3
+  - ninja
+  - trimesh
+  - opencv
+  - tensorboardX
+  - pytorch
+  - numpy 
+  - pandas
+  - tqdm
+  - matplotlib
+  - rich
+  - packaging
+  - scipy
+  - pip:
+    - imageio
+    - lpips
+    - torch-ema
+    - PyMCubes
+    - pysdf
+    - dearpygui
+    - configargparse
+    - git+https://github.com/NVlabs/tiny-cuda-nn/#subdirectory=bindings/torch
