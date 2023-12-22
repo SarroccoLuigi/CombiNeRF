@@ -322,12 +322,54 @@ class _get_weights(Function):
     def backward(ctx, grad_weights):
         grad_weights = grad_weights.contiguous()
         sigmas, deltas,  weights, alphas_shifted = ctx.saved_tensors
-        grad_sigmas = grad_weights * torch.cumprod(alphas_shifted, dim=-1)[..., 1:] * deltas
+        #grad_sigmas = grad_weights * torch.cumprod(alphas_shifted, dim=-1)[..., 1:] * deltas
+        grad_sigmas = grad_weights * (-deltas * alphas_shifted[..., :-1] * weights / (1 - alphas_shifted[..., :-1] + 1e-15))
+
 
         return grad_sigmas, None
 
 
 get_weights = _get_weights.apply
+
+
+class _get_image(Function):
+    @staticmethod
+    @custom_fwd(cast_inputs=torch.float32)
+    def forward(ctx, sigmas, rgbs, deltas):
+        ''' composite rays' rgbs, according to the ray marching formula.
+        Args:
+            sigmas: float, [M,]
+            deltas: float, [M, 2]
+            rays: int32, [N, 3]
+        Returns:
+            weights_sum: float, [N,], the alpha channel
+            depth: float, [N, ], the Depth
+            image: float, [N, 3], the RGB channel (after multiplying alpha!)
+        '''
+
+        alphas = 1 - torch.exp(-deltas * sigmas)  # [N, T]
+        alphas_shifted = torch.cat([torch.ones_like(alphas[..., :1]), 1 - alphas + 1e-15], dim=-1)
+        T = torch.cumprod(alphas_shifted, dim=-1)
+        weights = alphas * T[..., :-1]
+        #torch.cumprod(alphas_shifted, dim=-1)[..., 1:] == torch.cumprod(alphas_shifted, dim=-1)[..., :-1] * (1.0 - alphas)
+        ctx.save_for_backward(sigmas, deltas,  weights, rgbs, T)
+        image = torch.sum(weights.unsqueeze(-1) * rgbs, dim=-2) # [N, 3], in [0, 1]
+
+        return image
+
+    @staticmethod
+    @custom_bwd
+    def backward(ctx, grad_image):
+        sigmas, deltas, weights, rgbs, T = ctx.saved_tensors
+        Tf = T[..., 1:]
+        rgbs_partial = torch.cumsum(weights[..., None] * rgbs, dim=-2)
+        rgbs_final = rgbs_partial[:, -1, :][:, None, :]
+        grad_sigmas = deltas * ((Tf[..., None] * rgbs - (rgbs_final-rgbs_partial)) * grad_image[:,None,:]).sum(dim=-1)
+        grad_rgbs = weights[..., None] * grad_image[:,None,:]
+
+        return grad_sigmas, grad_rgbs, None
+
+get_image = _get_image.apply
 
 class _get_weights_train(Function):
     @staticmethod
