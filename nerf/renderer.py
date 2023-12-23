@@ -267,10 +267,10 @@ class NeRFRenderer(nn.Module):
         #deltas[torch.where(deltas == 0.)] = 1e-6 # avoid 0.0 values
         deltas = torch.cat([deltas, sample_dist * torch.ones_like(deltas[..., :1])], dim=-1)
         sigmas = density_outputs['sigma'].squeeze(-1)
-        alphas = 1 - torch.exp(-deltas * self.density_scale * density_outputs['sigma'].squeeze(-1)) # [N, T+t]
+        # alphas = 1 - torch.exp(-deltas * self.density_scale * density_outputs['sigma'].squeeze(-1)) # [N, T+t]
         alphas_shifted = torch.cat([torch.ones_like(alphas[..., :1]), 1 - alphas + 1e-15], dim=-1) # [N, T+t+1]
-        weights = alphas * torch.cumprod(alphas_shifted, dim=-1)[..., :-1] # [N, T+t]
-
+        #weights = alphas * torch.cumprod(alphas_shifted, dim=-1)[..., :-1] # [N, T+t]
+        weights = raymarching.get_weights(sigmas, deltas)
         dirs = rays_d.view(-1, 1, 3).expand_as(xyzs)
         for k, v in density_outputs.items():
             density_outputs[k] = v.view(-1, v.shape[-1])
@@ -289,8 +289,8 @@ class NeRFRenderer(nn.Module):
         depth = torch.sum(weights * ori_z_vals, dim=-1)
 
         # calculate color
-        #image = torch.sum(weights.unsqueeze(-1) * rgbs, dim=-2) # [N, 3], in [0, 1]
-        image = raymarching.get_image(sigmas, rgbs, deltas)
+        image = torch.sum(weights.unsqueeze(-1) * rgbs, dim=-2) # [N, 3], in [0, 1]
+        #image = raymarching.get_image(sigmas, rgbs, deltas)
         # mix background color
         if self.bg_radius > 0:
             # use the bg model to calculate bg_color

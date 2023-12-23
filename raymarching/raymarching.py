@@ -311,21 +311,27 @@ class _get_weights(Function):
         sigmas = sigmas.contiguous()
         alphas = 1 - torch.exp(-deltas * sigmas)  # [N, T]
         alphas_shifted = torch.cat([torch.ones_like(alphas[..., :1]), 1 - alphas + 1e-15], dim=-1)
-        weights = alphas * torch.cumprod(alphas_shifted, dim=-1)[..., :-1]
+        Ts  = torch.cumprod(alphas_shifted, dim=-1)
+        weights = alphas * Ts[..., :-1]
         #torch.cumprod(alphas_shifted, dim=-1)[..., 1:] == torch.cumprod(alphas_shifted, dim=-1)[..., :-1] * (1.0 - alphas)
-        ctx.save_for_backward(sigmas, deltas,  weights, alphas_shifted)
+        ctx.save_for_backward(sigmas, deltas,  weights, alphas, Ts)
 
         return weights
 
     @staticmethod
     @custom_bwd
     def backward(ctx, grad_weights):
+        # CASE 1: dwj/σi with j<i --> dwj/dσi = 0
+        # CASE 2: dwi/σi --> dwi/dσi = δ*T[i+1]
+        # CASE 3: dwj/σi with j>i --> dwj/dσi = δi*αj*T[j]
+        # Considerin all those then dσi = δi*(T[i+1] * dwi + ∑ dwj*αj*T[j])
+
         grad_weights = grad_weights.contiguous()
-        sigmas, deltas,  weights, alphas_shifted = ctx.saved_tensors
-        #grad_sigmas = grad_weights * torch.cumprod(alphas_shifted, dim=-1)[..., 1:] * deltas
-        grad_sigmas = grad_weights * (-deltas * alphas_shifted[..., :-1] * weights / (1 - alphas_shifted[..., :-1] + 1e-15))
-
-
+        sigmas, deltas,  weights, alphas, Ts = ctx.saved_tensors
+        grad_wj = alphas * Ts[..., :-1] * grad_weights
+        grad_wj = torch.flip(torch.cumsum(torch.flip(grad_wj, dims=[1]), dim=1), dims=[1])
+        grad_wj = torch.cat([grad_wj, torch.zeros_like(grad_wj[..., :1])], dim=-1)[:,1:]
+        grad_sigmas = deltas * (grad_weights * Ts[..., 1:] - grad_wj)
         return grad_sigmas, None
 
 
