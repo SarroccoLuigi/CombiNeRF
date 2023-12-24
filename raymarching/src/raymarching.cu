@@ -1212,3 +1212,109 @@ void composite_rays(const uint32_t n_alive, const uint32_t n_step, const float T
         kernel_composite_rays<<<div_round_up(n_alive, N_THREAD), N_THREAD>>>(n_alive, n_step, T_thresh, rays_alive.data_ptr<int>(), rays_t.data_ptr<scalar_t>(), sigmas.data_ptr<scalar_t>(), rgbs.data_ptr<scalar_t>(), deltas.data_ptr<scalar_t>(), weights.data_ptr<scalar_t>(), depth.data_ptr<scalar_t>(), image.data_ptr<scalar_t>());
     }));
 }
+
+
+
+// weights: [M]
+// values: [M, D]
+// rays: [N, 3], idx, offset, num_steps
+// weighted_sum: [N, D], final pixel alpha
+template <typename scalar_t>
+__global__ void kernel_weighted_sum_cuda_forward(
+    const scalar_t * __restrict__ weights,
+    const scalar_t * __restrict__ values,
+    const uint32_t N, const uint32_t Ns,  const uint32_t D,
+    scalar_t * weighted_sum
+) {
+    // parallel per ray
+    const uint32_t n = threadIdx.x + blockIdx.x * blockDim.x;
+    if (n >= N) return;
+
+    // locate
+
+    weighted_sum += n * D;
+    weights += n * Ns;
+    values += n * Ns * D;
+
+    // accumulate
+    uint32_t step = 0;
+    uint32_t dim = 0;
+    while (step < Ns) {
+        dim = 0;
+        while (dim < D)
+        {
+            weighted_sum[dim] += values[dim] * weights[0];
+            dim++;
+        }
+        weights++;
+        values += D;
+        step++;
+    }
+}
+
+void weighted_sum_cuda_forward(const at::Tensor weights, const at::Tensor values, const uint32_t N, const uint32_t Ns, const uint32_t D, at::Tensor weighted_sum)
+{
+
+    static constexpr uint32_t N_THREAD = 128;
+
+    AT_DISPATCH_FLOATING_TYPES_AND_HALF(
+    values.scalar_type(), " weighted_sum_cuda_forward", ([&] {
+        kernel_weighted_sum_cuda_forward<<<div_round_up(N, N_THREAD), N_THREAD>>>(weights.data_ptr<scalar_t>(), values.data_ptr<scalar_t>(), N, Ns, D, weighted_sum.data_ptr<scalar_t>());
+    }));
+}
+template <typename scalar_t>
+__global__ void kernel_weighted_sum_cuda_backward(
+    const scalar_t * __restrict__ grad_weighted_sum,
+    const scalar_t * __restrict__ weights,
+    const scalar_t * __restrict__ values,
+    const uint32_t N, const uint32_t Ns,  const uint32_t D,
+    scalar_t * grad_weights,
+    scalar_t * grad_values
+) {
+    // parallel per ray
+    const uint32_t n = threadIdx.x + blockIdx.x * blockDim.x;
+    if (n >= N) return;
+
+    // locate
+    grad_weighted_sum += n * D;
+    weights += n * Ns;
+    values += n * Ns * D;
+
+    grad_weights += n * Ns;
+    grad_values += n * Ns * D;
+
+    // accumulate
+    uint32_t step = 0;
+    uint32_t dim = 0;
+    scalar_t T = 1.0f;
+    while (step < Ns) {
+
+        dim = 0;
+        while (dim < D)
+        {
+            grad_weights[0] += values[dim] * grad_weighted_sum[dim];
+            grad_values[dim] = weights[0] * grad_weighted_sum[dim];
+            dim++;
+        }
+
+        // locate
+        //grad_weighted_sum += D;
+
+        grad_weights++;
+        weights++;
+        grad_values += D;
+        values += D;
+        step++;
+    }
+}
+
+void weighted_sum_cuda_backward(const at::Tensor grad_weighted_sum, const at::Tensor weights, const at::Tensor values, const uint32_t N, const uint32_t Ns, const uint32_t D, const at::Tensor grad_weights, const at::Tensor grad_values)
+{
+
+    static constexpr uint32_t N_THREAD = 128;
+
+    AT_DISPATCH_FLOATING_TYPES_AND_HALF(
+    values.scalar_type(), " weighted_sum_cuda_backward", ([&] {
+        kernel_weighted_sum_cuda_backward<<<div_round_up(N, N_THREAD), N_THREAD>>>(grad_weighted_sum.data_ptr<scalar_t>(), weights.data_ptr<scalar_t>(), values.data_ptr<scalar_t>(), N, Ns, D, grad_weights.data_ptr<scalar_t>(), grad_values.data_ptr<scalar_t>());
+    }));
+}

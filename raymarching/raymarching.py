@@ -458,7 +458,7 @@ class _weighted_sum_train(Function):
 
         # weights = torch.zeros((N, final_max_steps), dtype=sigmas.dtype, device=sigmas.device)
         #weighted_sum = torch.zeros((N, D), dtype=values.dtype, device=values.device).contiguous()
-        weighted_sum = torch.empty(N, D, dtype=values.dtype, device=values.device).contiguous()
+        weighted_sum = torch.zeros(N, D, dtype=values.dtype, device=values.device).contiguous()
         _backend.weighted_sum_train_forward(weights, values, rays, M, N, D, weighted_sum)
 
         ctx.save_for_backward(weights, values, rays)
@@ -485,6 +485,57 @@ class _weighted_sum_train(Function):
 
 
 weighted_sum_train = _weighted_sum_train.apply
+
+class _weighted_sum_cuda(Function):
+    @staticmethod
+    @custom_fwd(cast_inputs=torch.float32)
+    def forward(ctx, weights, values):
+        ''' composite rays' rgbs, according to the ray marching formula.
+        Args:
+            weights: float, [N, Ns, 1]
+            values: float, [N, Ns, 3]
+            rays: int32, [N, 3], all rays' (index, point_offset, point_count), e.g., xyzs[rays[i, 1]:rays[i, 2]] --> points belonging to rays[i, 0]
+
+        Returns:
+            weighted_sum: float, [N, D] weighted sum
+        '''
+
+        weights = weights.contiguous()
+        values = values.contiguous()
+
+        N = weights.shape[0]
+        Ns = weights.shape[1]
+        D = values.shape[2]
+
+        # weights = torch.zeros((N, final_max_steps), dtype=sigmas.dtype, device=sigmas.device)
+        #weighted_sum = torch.zeros((N, D), dtype=values.dtype, device=values.device).contiguous()
+        weighted_sum = torch.zeros(N, D, dtype=values.dtype, device=values.device).contiguous()
+        _backend.weighted_sum_cuda_forward(weights, values, N, Ns, D, weighted_sum)
+
+        ctx.save_for_backward(weights, values)
+        ctx.dims = [N, Ns, D]
+
+        return weighted_sum
+
+    @staticmethod
+    @custom_bwd
+    def backward(ctx, grad_weighted_sum):
+        # NOTE: grad_depth is not used now! It won't be propagated to sigmas.
+        grad_weighted_sum = grad_weighted_sum.contiguous()
+        weights, values = ctx.saved_tensors
+
+        N, Ns, D = ctx.dims
+
+        grad_weights = torch.zeros_like(weights)
+        grad_values = torch.zeros_like(values)
+
+        _backend.weighted_sum_cuda_backward(grad_weighted_sum, weights, values, N,
+                                               Ns, D, grad_weights, grad_values)
+
+        return grad_weights, grad_values
+
+
+weighted_sum_cuda = _weighted_sum_cuda.apply
 
 class _weighted_sum(Function):
     @staticmethod

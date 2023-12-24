@@ -21,6 +21,9 @@ void get_weights_train_backward(const at::Tensor grad_weights, const at::Tensor 
 void weighted_sum_train_forward(const at::Tensor weights, const at::Tensor values, const at::Tensor rays, const uint32_t M, const uint32_t N, const uint32_t D,  at::Tensor weighted_sum);
 void weighted_sum_train_backward(const at::Tensor grad_weighted_sum, const at::Tensor weights, const at::Tensor values, const at::Tensor rays, const uint32_t M, const uint32_t N, const uint32_t D, const at::Tensor grad_weights, const at::Tensor grad_values);
 
+void weighted_sum_cuda_forward(const at::Tensor weights, const at::Tensor values, const uint32_t N, const uint32_t Ns, const uint32_t D,  at::Tensor weighted_sum);
+void weighted_sum_cuda_backward(const at::Tensor grad_weighted_sum, const at::Tensor weights, const at::Tensor values, const uint32_t N, const uint32_t Ns, const uint32_t D, const at::Tensor grad_weights, const at::Tensor grad_values);
+
 
 void march_rays(const uint32_t n_alive, const uint32_t n_step, const at::Tensor rays_alive, const at::Tensor rays_t, const at::Tensor rays_o, const at::Tensor rays_d, const float bound, const float dt_gamma, const uint32_t max_steps, const uint32_t C, const uint32_t H, const at::Tensor grid, const at::Tensor nears, const at::Tensor fars, at::Tensor xyzs, at::Tensor dirs, at::Tensor deltas, at::Tensor noises);
 void composite_rays(const uint32_t n_alive, const uint32_t n_step, const float T_thresh, at::Tensor rays_alive, at::Tensor rays_t, at::Tensor sigmas, at::Tensor rgbs, at::Tensor deltas, at::Tensor weights_sum, at::Tensor depth, at::Tensor image);

@@ -19,6 +19,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
 
     m.def("weighted_sum_train_forward", &weighted_sum_train_forward, "weighted_sum_train_forward (CUDA)");
     m.def("weighted_sum_train_backward", &weighted_sum_train_backward, "weighted_sum_train_backward (CUDA)");
+
+    m.def("weighted_sum_cuda_forward", &weighted_sum_cuda_forward, "weighted_sum_cuda_forward (CUDA)");
+    m.def("weighted_sum_cuda_backward", &weighted_sum_cuda_backward, "weighted_sum_cuda_backward (CUDA)");
     // infer
     m.def("march_rays", &march_rays, "march rays (CUDA)");
     m.def("composite_rays", &composite_rays, "composite rays (CUDA)");
