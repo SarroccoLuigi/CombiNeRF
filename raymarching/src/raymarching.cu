@@ -1318,3 +1318,153 @@ void weighted_sum_cuda_backward(const at::Tensor grad_weighted_sum, const at::Te
         kernel_weighted_sum_cuda_backward<<<div_round_up(N, N_THREAD), N_THREAD>>>(grad_weighted_sum.data_ptr<scalar_t>(), weights.data_ptr<scalar_t>(), values.data_ptr<scalar_t>(), N, Ns, D, grad_weights.data_ptr<scalar_t>(), grad_values.data_ptr<scalar_t>());
     }));
 }
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+template <typename scalar_t>
+__global__ void kernel_get_weights_cuda_forward(
+    const scalar_t * __restrict__ sigmas,
+    const scalar_t * __restrict__ deltas,
+    const uint32_t N, const uint32_t Ns,  const uint32_t Nd,  const float T_thresh,
+    scalar_t * weights,
+    scalar_t * Ts,
+    scalar_t * alphas,
+    int * debug
+) {
+    // parallel per ray
+    const uint32_t n = threadIdx.x + blockIdx.x * blockDim.x;
+    debug[0] = n;
+
+    if (n >= N) return;
+    debug[1] = N;
+    debug[2] = Ns;
+
+    // locate
+    sigmas += n * Ns;
+    deltas += n * Ns;
+
+    Ts += n * Ns;
+    alphas += n * Ns;
+    weights +=  n * Ns;
+
+    // accumulate
+    uint32_t step = 0;
+
+    scalar_t T = 1.0f;
+    scalar_t ws = 0, t = 0, d = 0;
+
+    while (step < Ns) {
+        const scalar_t alpha = 1.0f - __expf(- sigmas[0] * deltas[0]);
+        const scalar_t weight = alpha * T;
+        weights[0] = weight;
+        alphas[0] = alpha;
+        Ts[0] = T;
+
+        T *= 1.0f - alpha;
+
+        // minimal remained transmittence
+        if (T < T_thresh) break;
+
+        // locate
+        Ts++;
+        weights++;
+        alphas++;
+
+        sigmas++;
+        deltas ++;
+        step++;
+    }
+}
+
+void get_weights_cuda_forward(const at::Tensor sigmas, const at::Tensor deltas,  const uint32_t N, const uint32_t Ns,  const uint32_t Nd,  const float T_thresh, at::Tensor weights, at::Tensor Ts, at::Tensor alphas, at::Tensor debug) {
+
+    static constexpr uint32_t N_THREAD = 128;
+
+    AT_DISPATCH_FLOATING_TYPES_AND_HALF(
+    sigmas.scalar_type(), "get_weights_cuda_forward", ([&] {
+        kernel_get_weights_cuda_forward<<<div_round_up(N, N_THREAD), N_THREAD>>>(sigmas.data_ptr<scalar_t>(), deltas.data_ptr<scalar_t>(), N, Ns, Nd, T_thresh,  weights.data_ptr<scalar_t>(), Ts.data_ptr<scalar_t>(), alphas.data_ptr<scalar_t>(), debug.data_ptr<int>());
+    }));
+}
+
+
+// grad_weights_sum: [N,]
+// grad: [N, 3]
+// sigmas: [M]
+// rgbs: [M, 3]
+// deltas: [M, 2]
+// rays: [N, 3], idx, offset, num_steps
+// weights_sum: [N,], weights_sum here
+// image: [N, 3]
+// grad_sigmas: [M]
+// grad_rgbs: [M, 3]
+template <typename scalar_t>
+__global__ void kernel_get_weights_cuda_backward(
+    const scalar_t * __restrict__ grad_weights,
+    const scalar_t * __restrict__ sigmas,
+    const scalar_t * __restrict__ deltas,
+    const scalar_t * __restrict__ weights,
+    const scalar_t * __restrict__ Ts,
+    const scalar_t * __restrict__ alphas,
+    const uint32_t N, const uint32_t Ns, const float T_thresh,
+    scalar_t * grad_helper,
+    scalar_t * grad_sigmas
+) {
+    // parallel per ray
+    const uint32_t n = threadIdx.x + blockIdx.x * blockDim.x;
+    if (n >= N) return;
+
+    // locate
+    grad_weights += n * Ns;
+    Ts +=  n * Ns;
+    alphas +=  n * Ns;
+    weights +=  n * Ns;
+    sigmas +=  n * Ns;
+    deltas +=  n * Ns;
+    grad_helper +=  n * Ns;
+    grad_sigmas +=  n * Ns;
+
+    // accumulate
+    uint32_t step = 0;
+    int32_t last_step = Ns - 1;
+
+    scalar_t acc = 0;
+    while (last_step >= 0){
+        grad_helper[last_step] = acc;
+        acc += alphas[last_step] * grad_weights[last_step] * Ts[last_step];
+        last_step--;
+    }
+
+    while (step < Ns) {
+
+        // check https://note.kiui.moe/others/nerf_gradient/ for the gradient calculation.
+        if (Ts[0]< T_thresh) break;
+
+        // write grad_sigmas
+        //grad_sigmas[0] = deltas[0] * ((grad_weights[0] * Ts[0] * (1.0f-alphas[0])) - grad_helper[0]);
+        grad_sigmas[0] = deltas[0] * ((grad_weights[0] * Ts[0] * (1.0f-alphas[0])) - grad_helper[0]);
+        //printf("[n=%d] num_steps=%d, T=%f, grad_sigmas=%f, r_final=%f, r=%f\n", n, step, T, grad_sigmas[0], r_final, r);
+        // minimal remained transmittence
+
+        // locate
+        sigmas++;
+        Ts++;
+        alphas++;
+        grad_weights++;
+        deltas ++;
+        grad_helper++;
+        grad_sigmas++;
+
+        step++;
+    }
+}
+
+
+void get_weights_cuda_backward(const at::Tensor grad_weights,   const at::Tensor sigmas, const at::Tensor deltas, const at::Tensor weights,  const at::Tensor Ts, const at::Tensor alphas, const uint32_t N, const uint32_t Ns,  const float T_thresh, at::Tensor grad_helper, at::Tensor grad_sigmas) {
+
+    static constexpr uint32_t N_THREAD = 128;
+
+    AT_DISPATCH_FLOATING_TYPES_AND_HALF(
+    grad_weights.scalar_type(), "get_weights_cuda_backward", ([&] {
+        kernel_get_weights_cuda_backward<<<div_round_up(N, N_THREAD), N_THREAD>>>(grad_weights.data_ptr<scalar_t>(), sigmas.data_ptr<scalar_t>(), deltas.data_ptr<scalar_t>(), weights.data_ptr<scalar_t>(), Ts.data_ptr<scalar_t>(), alphas.data_ptr<scalar_t>(), N, Ns, T_thresh, grad_helper.data_ptr<scalar_t>(), grad_sigmas.data_ptr<scalar_t>());
+    }));
+}

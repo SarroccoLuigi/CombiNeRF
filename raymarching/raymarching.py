@@ -277,7 +277,6 @@ class _composite_rays_train(Function):
     @staticmethod
     @custom_bwd
     def backward(ctx, grad_weights, grad_depth, grad_image):
-
         # NOTE: grad_depth is not used now! It won't be propagated to sigmas.
         grad_weights = grad_weights.contiguous()
         grad_image = grad_image.contiguous()
@@ -335,6 +334,8 @@ class _get_weights(Function):
         grad_wj = torch.flip(torch.cumsum(torch.flip(grad_wj, dims=[1]), dim=1), dims=[1])
         grad_wj = torch.cat([grad_wj, torch.zeros_like(grad_wj[..., :1])], dim=-1)[:, 1:]
         grad_sigmas = deltas * (grad_weights * Ts[..., 1:] - grad_wj)
+        #grad_sigmas = deltas * grad_wj
+
         return grad_sigmas, None
 
 
@@ -402,9 +403,9 @@ class _get_weights_train(Function):
         N = rays.shape[0]
 
         # weights = torch.zeros((N, final_max_steps), dtype=sigmas.dtype, device=sigmas.device)
-        weights = torch.empty(M, dtype=sigmas.dtype, device=sigmas.device).contiguous()
-        Ts = torch.empty(M, dtype=sigmas.dtype, device=sigmas.device).contiguous()
-        alphas = torch.empty(M, dtype=sigmas.dtype, device=sigmas.device).contiguous()
+        weights = torch.zeros(M, dtype=sigmas.dtype, device=sigmas.device).contiguous()
+        Ts = torch.zeros(M, dtype=sigmas.dtype, device=sigmas.device).contiguous()
+        alphas = torch.zeros(M, dtype=sigmas.dtype, device=sigmas.device).contiguous()
         _backend.get_weights_train_forward(sigmas, deltas, rays, M, N, T_thresh, weights, Ts, alphas)
 
         ctx.save_for_backward(sigmas, deltas, rays, weights, Ts, alphas)
@@ -424,7 +425,7 @@ class _get_weights_train(Function):
 
         M, N, T_thresh = ctx.dims
 
-        grad_helper = torch.empty(M, dtype=sigmas.dtype, device=sigmas.device).contiguous()
+        grad_helper = torch.zeros(M, dtype=sigmas.dtype, device=sigmas.device).contiguous()
         _backend.get_weights_train_backward(grad_weights, sigmas,  deltas, rays, weights, Ts, alphas, M,
                                                N, T_thresh, grad_helper, grad_sigmas)
 
@@ -661,3 +662,57 @@ class _composite_rays(Function):
 
 
 composite_rays = _composite_rays.apply
+
+class _get_weights_cuda(Function):
+    @staticmethod
+    @custom_fwd(cast_inputs=torch.float32)
+    def forward(ctx, sigmas,  deltas, T_thresh=1e-4):
+        ''' composite rays' rgbs, according to the ray marching formula.
+        Args:
+            sigmas: float, [M,]
+            deltas: float, [M, 2]
+            rays: int32, [N, 3]
+        Returns:
+            weights_sum: float, [N,], the alpha channel
+            depth: float, [N, ], the Depth
+            image: float, [N, 3], the RGB channel (after multiplying alpha!)
+        '''
+
+        sigmas = sigmas.contiguous()
+        deltas = deltas.contiguous()
+        N = sigmas.shape[0]
+        Ns = sigmas.shape[1]
+        Nd = 5
+        # weights = torch.zeros((N, final_max_steps), dtype=sigmas.dtype, device=sigmas.device)
+        weights = torch.zeros(N, Ns, dtype=sigmas.dtype, device=sigmas.device).contiguous()
+        debug = torch.zeros(Nd, dtype=torch.int32, device=sigmas.device).contiguous()
+
+        Ts = torch.zeros(N, Ns, dtype=sigmas.dtype, device=sigmas.device).contiguous()
+        alphas = torch.zeros(N, Ns, dtype=sigmas.dtype, device=sigmas.device).contiguous()
+        _backend.get_weights_cuda_forward(sigmas, deltas, N, Ns, Nd, T_thresh, weights, Ts, alphas, debug)
+
+        ctx.save_for_backward(sigmas, deltas, weights, Ts, alphas)
+        ctx.dims = [N, Ns, T_thresh]
+
+        return weights
+
+    @staticmethod
+    @custom_bwd
+    def backward(ctx, grad_weights):
+        # NOTE: grad_depth is not used now! It won't be propagated to sigmas.
+        sigmas,  deltas,  weights, Ts, alphas = ctx.saved_tensors
+
+        grad_weights = grad_weights.contiguous()
+        grad_sigmas = torch.zeros_like(sigmas).contiguous()
+
+
+        N, Ns, T_thresh = ctx.dims
+
+        grad_helper = torch.zeros(N, Ns, dtype=sigmas.dtype, device=sigmas.device).contiguous()
+        _backend.get_weights_cuda_backward(grad_weights, sigmas,  deltas,  weights, Ts, alphas, N,
+                                               Ns, T_thresh, grad_helper, grad_sigmas)
+
+        return grad_sigmas, None, None
+
+
+get_weights_cuda = _get_weights_cuda.apply

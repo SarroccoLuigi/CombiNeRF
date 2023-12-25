@@ -118,3 +118,43 @@ if __name__=='__main__':
     rgbs = torch.rand(32, 64, 3)
     grad_image_to_sigma(deltas, sigmas, rgbs)
 
+    test_get_image_gradcheck(raymarching.get_image)
+    sigmas = torch.rand(32, 64, device='cuda')
+    deltas = torch.rand(32, 64, device='cuda')
+    rgbs = torch.rand(32, 64, 3, device='cuda')
+    input_data = torch.randn(5, 10, 3, requires_grad=True, device='cuda')
+    weights_data = torch.randn(5, 10, 1, requires_grad=True, device='cuda')
+
+    sigmas = torch.rand(8, 16, requires_grad=True, device='cuda')
+    deltas = torch.rand(8, 16, requires_grad=True, device='cuda')
+    sigmas_c = torch.clone(sigmas)
+    deltas_c = torch.clone(deltas)
+
+    # Check gradients using gradcheck with increased eps and disabled exception raising
+
+    weights_custom_cuda = raymarching.get_weights_cuda(sigmas, deltas)
+    weights_custom_cuda.backward(torch.ones_like(weights_custom_cuda))
+    debug_cuda_custom = sigmas.grad.detach().cpu().numpy()
+
+
+    # weights_custom = raymarching.get_weights(sigmas_c, deltas_c)
+    # weights_custom.backward(torch.ones_like(weights_custom))
+    # debug_custom = sigmas.grad.detach().cpu().numpy() - debug_cuda_custom
+
+    # Compute the weighted sum using PyTorch built-in functions
+    alphas = 1 - torch.exp(-deltas * sigmas)  # [N, T+t]
+    alphas_shifted = torch.cat([torch.ones_like(alphas[..., :1]), 1 - alphas + 1e-15], dim=-1)
+    # [N, T+t+1]
+    weights_torch = alphas * torch.cumprod(alphas_shifted, dim=-1)[..., :-1]  # [N, T+t]
+    # Compute gradients with respect to the weighted sum
+    gradient_weights_torch = torch.autograd.grad(weights_torch, (sigmas, deltas),
+                                                 grad_outputs=torch.ones_like(weights_torch))
+
+
+    # print("Analytical gradient with respect to sigmas:", gradient_weights_torch[0])
+
+    debug_torch = gradient_weights_torch[0].detach().cpu().numpy()
+    # Compare gradients
+    sigmas_grad_match = torch.allclose(gradient_weights_torch[0], sigmas.grad, atol=1e-05)
+
+    print("Gradients match (sigmas):", sigmas_grad_match)

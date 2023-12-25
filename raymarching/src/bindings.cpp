@@ -17,6 +17,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("get_weights_train_forward", &get_weights_train_forward, "get_weights_train_forward (CUDA)");
     m.def("get_weights_train_backward", &get_weights_train_backward, "get_weights_train_backward (CUDA)");
 
+    m.def("get_weights_cuda_forward", &get_weights_cuda_forward, "get_weights_cuda_forward (CUDA)");
+    m.def("get_weights_cuda_backward", &get_weights_cuda_backward, "get_weights_cuda_backward (CUDA)");
+
     m.def("weighted_sum_train_forward", &weighted_sum_train_forward, "weighted_sum_train_forward (CUDA)");
     m.def("weighted_sum_train_backward", &weighted_sum_train_backward, "weighted_sum_train_backward (CUDA)");
 
