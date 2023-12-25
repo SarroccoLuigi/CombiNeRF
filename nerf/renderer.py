@@ -270,7 +270,7 @@ class NeRFRenderer(nn.Module):
         # alphas = 1 - torch.exp(-deltas * self.density_scale * density_outputs['sigma'].squeeze(-1)) # [N, T+t]
         alphas_shifted = torch.cat([torch.ones_like(alphas[..., :1]), 1 - alphas + 1e-15], dim=-1) # [N, T+t+1]
         #weights = alphas * torch.cumprod(alphas_shifted, dim=-1)[..., :-1] # [N, T+t]
-        weights = raymarching.get_weights(sigmas, deltas)
+        weights = raymarching.get_weights_cuda(sigmas, deltas)
         dirs = rays_d.view(-1, 1, 3).expand_as(xyzs)
         for k, v in density_outputs.items():
             density_outputs[k] = v.view(-1, v.shape[-1])
@@ -289,7 +289,8 @@ class NeRFRenderer(nn.Module):
         depth = torch.sum(weights * ori_z_vals, dim=-1)
 
         # calculate color
-        image = torch.sum(weights.unsqueeze(-1) * rgbs, dim=-2) # [N, 3], in [0, 1]
+        #image = torch.sum(weights.unsqueeze(-1) * rgbs, dim=-2) # [N, 3], in [0, 1]
+        image = raymarching.weighted_sum_cuda(weights.unsqueeze(-1), rgbs)
         #image = raymarching.get_image(sigmas, rgbs, deltas)
         # mix background color
         if self.bg_radius > 0:
@@ -357,42 +358,34 @@ class NeRFRenderer(nn.Module):
             counter.zero_() # set to 0
             self.local_step += 1
 
-            xyzs, dirs, deltas, rays = raymarching.march_rays_train(rays_o, rays_d, self.bound, self.density_bitfield, self.cascade, self.grid_size, nears, fars, counter, self.mean_count, perturb, 128, force_all_rays, dt_gamma, max_steps)
+            xyzs, dirs, deltas, z_vals, rays = raymarching.march_rays_train(rays_o, rays_d, self.bound, self.density_bitfield, self.cascade, self.grid_size, nears, fars, counter, self.mean_count, perturb, 128, force_all_rays, dt_gamma, max_steps)
 
             #plot_pointcloud(xyzs.reshape(-1, 3).detach().cpu().numpy())
-            
+
             sigmas, rgbs = self(xyzs, dirs)
             # density_outputs = self.density(xyzs) # [M,], use a dict since it may include extra things, like geo_feat for rgb.
             # sigmas = density_outputs['sigma']
             # rgbs = self.color(xyzs, dirs, **density_outputs)
             sigmas = self.density_scale * sigmas
 
-            #print(f'valid RGB query ratio: {mask.sum().item() / mask.shape[0]} (total = {mask.sum().item()})')
 
-            # special case for CCNeRF's residual learning
-            if len(sigmas.shape) == 2:
-                K = sigmas.shape[0]
-                depths = []
-                images = []
-                for k in range(K):
-                    weights_sum, depth, image = raymarching.composite_rays_train(sigmas[k], rgbs[k], deltas, rays, T_thresh)
-                    image = image + (1 - weights_sum).unsqueeze(-1) * bg_color
-                    depth = torch.clamp(depth - nears, min=0) / (fars - nears)
-                    images.append(image.view(*prefix, 3))
-                    depths.append(depth.view(*prefix))
+            #weights, depth, image = raymarching.composite_rays_train(sigmas, rgbs, deltas, rays, T_thresh)
+            depth = torch.zeros(*prefix).cuda()
+            weights = raymarching.get_weights_train(sigmas, deltas, rays, T_thresh)
+
+            # # weights_deb_ = weights_.detach().cpu().numpy()[-800000:-400000]
+            # # weights_deb = weights.detach().cpu().numpy()[-800000:-435053]
+            # rays_deb = rays.detach().cpu().numpy()
+            # num_stepstot = rays[:, 2].sum()
+
+            image = raymarching.weighted_sum_train(weights, rgbs, rays)
+            weights_sum = raymarching.weighted_sum_train(weights, torch.ones_like(weights)[..., None], rays).squeeze(1)
+            #image = image + (1 - weights_sum).unsqueeze(-1) * bg_color
+            depth = torch.clamp(depth - nears, min=0) / (fars - nears)
+            image = image.view(*prefix, 3)
+            depth = depth.view(*prefix)
             
-                depth = torch.stack(depths, axis=0) # [K, B, N]
-                image = torch.stack(images, axis=0) # [K, B, N, 3]
-
-            else:
-
-                weights_sum, depth, image = raymarching.composite_rays_train(sigmas, rgbs, deltas, rays, T_thresh)
-                image = image + (1 - weights_sum).unsqueeze(-1) * bg_color
-                depth = torch.clamp(depth - nears, min=0) / (fars - nears)
-                image = image.view(*prefix, 3)
-                depth = depth.view(*prefix)
-            
-            results['weights_sum'] = weights_sum
+            #results['weights_sum'] = weights_sum
 
         else:
            
@@ -440,7 +433,7 @@ class NeRFRenderer(nn.Module):
 
                 step += n_step
 
-            image = image + (1 - weights_sum).unsqueeze(-1) * bg_color
+            #image = image + (1 - weights_sum).unsqueeze(-1) * bg_color
             depth = torch.clamp(depth - nears, min=0) / (fars - nears)
             image = image.view(*prefix, 3)
             depth = depth.view(*prefix)
@@ -605,8 +598,8 @@ class NeRFRenderer(nn.Module):
 
         ### update step counter
         total_step = min(16, self.local_step)
-        if total_step > 0:
-            self.mean_count = int(self.step_counter[:total_step, 0].sum().item() / total_step)
+        # if total_step > 0:
+        #     self.mean_count = int(self.step_counter[:total_step, 0].sum().item() / total_step)
         self.local_step = 0
 
         #print(f'[density grid] min={self.density_grid.min().item():.4f}, max={self.density_grid.max().item():.4f}, mean={self.mean_density:.4f}, occ_rate={(self.density_grid > 0.01).sum() / (128**3 * self.cascade):.3f} | [step counter] mean={self.mean_count}')
