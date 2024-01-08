@@ -369,17 +369,15 @@ class NeRFRenderer(nn.Module):
             sigmas = self.density_scale * sigmas
 
 
-            #weights, depth, image = raymarching.composite_rays_train(sigmas, rgbs, deltas, rays, T_thresh)
-            depth = torch.zeros(*prefix).cuda()
+            #weights_sum, depth_, image = raymarching.composite_rays_train(sigmas, rgbs, deltas, rays, T_thresh)
             weights = raymarching.get_weights_train(sigmas, deltas, rays, T_thresh)
-
             # # weights_deb_ = weights_.detach().cpu().numpy()[-800000:-400000]
             # # weights_deb = weights.detach().cpu().numpy()[-800000:-435053]
             # rays_deb = rays.detach().cpu().numpy()
             # num_stepstot = rays[:, 2].sum()
-
+            depth = raymarching.weighted_sum_train(weights, z_vals[:, None], rays).squeeze(1)
             image = raymarching.weighted_sum_train(weights, rgbs, rays)
-            weights_sum = raymarching.weighted_sum_train(weights, torch.ones_like(weights)[..., None], rays).squeeze(1)
+            #weights_sum = raymarching.weighted_sum_train(weights, torch.ones_like(weights)[..., None], rays).squeeze(1)
             #image = image + (1 - weights_sum).unsqueeze(-1) * bg_color
             depth = torch.clamp(depth - nears, min=0) / (fars - nears)
             image = image.view(*prefix, 3)

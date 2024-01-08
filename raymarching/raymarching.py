@@ -206,7 +206,7 @@ class _march_rays_train(Function):
         dirs = torch.zeros(M, 3, dtype=rays_o.dtype, device=rays_o.device)
         deltas = torch.zeros(M, 2, dtype=rays_o.dtype, device=rays_o.device)
         # memory spike?
-        z_vals = torch.zeros(N, max_steps, dtype=rays_o.dtype, device=rays_o.device)
+        z_vals = torch.zeros(M, dtype=rays_o.dtype, device=rays_o.device)
         rays = torch.empty(N, 3, dtype=torch.int32, device=rays_o.device) # id, offset, num_steps
 
         if step_counter is None:
@@ -229,10 +229,9 @@ class _march_rays_train(Function):
             xyzs = xyzs[:m]
             dirs = dirs[:m]
             deltas = deltas[:m]
+            z_vals = z_vals[:m]
 
             torch.cuda.empty_cache()
-        final_max_steps = torch.max(rays[:, 2])
-        z_vals = z_vals[:, :final_max_steps]
         return xyzs, dirs, deltas, z_vals, rays
 
 march_rays_train = _march_rays_train.apply
@@ -260,40 +259,39 @@ class _composite_rays_train(Function):
         M = sigmas.shape[0]
         N = rays.shape[0]
 
-        #weights = torch.zeros((N, final_max_steps), dtype=sigmas.dtype, device=sigmas.device)
-        weights = torch.zeros(M, dtype=sigmas.dtype, device=sigmas.device)
-        alphas = torch.zeros(M, dtype=sigmas.dtype, device=sigmas.device)
-        Ts = torch.zeros(M, dtype=sigmas.dtype, device=sigmas.device)
-        depth = torch.zeros(N, dtype=sigmas.dtype, device=sigmas.device)
-        image = torch.zeros(N, 3, dtype=sigmas.dtype, device=sigmas.device)
+        weights_sum = torch.empty(N, dtype=sigmas.dtype, device=sigmas.device)
+        depth = torch.empty(N, dtype=sigmas.dtype, device=sigmas.device)
+        image = torch.empty(N, 3, dtype=sigmas.dtype, device=sigmas.device)
 
-        _backend.composite_rays_train_forward(sigmas, rgbs, deltas, rays, M, N, T_thresh, alphas, Ts, weights, depth, image)
+        _backend.composite_rays_train_forward(sigmas, rgbs, deltas, rays, M, N, T_thresh, weights_sum, depth, image)
 
-        ctx.save_for_backward(sigmas, rgbs, deltas, rays, alphas, Ts, weights,  depth, image)
+        ctx.save_for_backward(sigmas, rgbs, deltas, rays, weights_sum, depth, image)
         ctx.dims = [M, N, T_thresh]
 
-        return weights, depth, image
+        return weights_sum, depth, image
 
     @staticmethod
     @custom_bwd
-    def backward(ctx, grad_weights, grad_depth, grad_image):
+    def backward(ctx, grad_weights_sum, grad_depth, grad_image):
         # NOTE: grad_depth is not used now! It won't be propagated to sigmas.
-        grad_weights = grad_weights.contiguous()
-        grad_image = grad_image.contiguous()
-        sigmas, rgbs, deltas, rays, alphas, Ts, weights, depth, image = ctx.saved_tensors
 
-        M, N,  T_thresh = ctx.dims
+        grad_weights_sum = grad_weights_sum.contiguous()
+        grad_image = grad_image.contiguous()
+
+        sigmas, rgbs, deltas, rays, weights_sum, depth, image = ctx.saved_tensors
+        M, N, T_thresh = ctx.dims
 
         grad_sigmas = torch.zeros_like(sigmas)
-        grad_helper = torch.zeros_like(sigmas)
         grad_rgbs = torch.zeros_like(rgbs)
 
-        _backend.composite_rays_train_backward(grad_weights, grad_image, sigmas, rgbs, deltas, rays, alphas, Ts, weights, image, M, N,  T_thresh, grad_helper, grad_sigmas, grad_rgbs)
+        _backend.composite_rays_train_backward(grad_weights_sum, grad_image, sigmas, rgbs, deltas, rays, weights_sum,
+                                               image, M, N, T_thresh, grad_sigmas, grad_rgbs)
 
-        return grad_sigmas, grad_rgbs, None, None, None, None
+        return grad_sigmas, grad_rgbs, None, None, None
 
 
 composite_rays_train = _composite_rays_train.apply
+
 
 class _get_weights(Function):
     @staticmethod
