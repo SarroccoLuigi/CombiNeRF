@@ -385,21 +385,25 @@ class NeRFRenderer(nn.Module):
                     images.append(image.view(*prefix, 3))
                     depths.append(depth.view(*prefix))
 
-            #weights_sum, depth_, image = raymarching.composite_rays_train(sigmas, rgbs, deltas, rays, T_thresh)
-            weights = raymarching.get_weights_train(sigmas, deltas, rays, T_thresh)
-            # # weights_deb_ = weights_.detach().cpu().numpy()[-800000:-400000]
-            # # weights_deb = weights.detach().cpu().numpy()[-800000:-435053]
-            # rays_deb = rays.detach().cpu().numpy()
-            # num_stepstot = rays[:, 2].sum()
-            depth = raymarching.weighted_sum_train(weights, z_vals[:, None], rays).squeeze(1)
-            image = raymarching.weighted_sum_train(weights, rgbs, rays)
-            #weights_sum = raymarching.weighted_sum_train(weights, torch.ones_like(weights)[..., None], rays).squeeze(1)
-            #image = image + (1 - weights_sum).unsqueeze(-1) * bg_color
-            depth = torch.clamp(depth - nears, min=0) / (fars - nears)
-            image = image.view(*prefix, 3)
-            depth = depth.view(*prefix)
+                depth = torch.stack(depths, axis=0)  # [K, B, N]
+                image = torch.stack(images, axis=0)  # [K, B, N, 3]
 
-            #results['weights_sum'] = weights_sum
+            else:
+
+                # weights_sum, depth, image = raymarching.composite_rays_train(sigmas, rgbs, deltas, rays, T_thresh)
+                # image = image + (1 - weights_sum).unsqueeze(-1) * bg_color
+                # depth = torch.clamp(depth - nears, min=0) / (fars - nears)
+                # image = image.view(*prefix, 3)
+                # depth = depth.view(*prefix)
+                weights = raymarching.get_weights_train(sigmas, deltas, rays, T_thresh)
+                depth = raymarching.weighted_sum_train(weights, z_vals[:, None], rays).squeeze(1)
+                image = raymarching.weighted_sum_train(weights, rgbs, rays)
+                weights_sum = raymarching.weighted_sum_train(weights, torch.ones_like(weights)[..., None], rays).squeeze(1)
+                image = image + (1 - weights_sum).unsqueeze(-1) * bg_color
+                depth = torch.clamp(depth - nears, min=0) / (fars - nears)
+                image = image.view(*prefix, 3)
+                depth = depth.view(*prefix)
+            results['weights_sum'] = weights_sum
 
         else:
 
