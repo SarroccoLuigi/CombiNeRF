@@ -2,7 +2,7 @@ import os
 import cv2
 import glob
 import json
-#from cv2 import transform
+# from cv2 import transform
 import tqdm
 import numpy as np
 from scipy.spatial.transform import Slerp, Rotation
@@ -28,11 +28,21 @@ def nerf_matrix_to_ngp(pose, scale=0.33, offset=[0, 0, 0]):
     return new_pose
 
 
-def visualize_poses(poses, size=0.1):
+def visualize_poses(poses, aabb, size=0.1):
     # poses: [B, 4, 4]
-
     axes = trimesh.creation.axis(axis_length=4)
-    box = trimesh.primitives.Box(extents=(2, 2, 2)).as_outline()
+
+    x_l = aabb[3] - aabb[0]
+    y_l = aabb[4] - aabb[1]
+    z_l = aabb[5] - aabb[2]
+
+    transform = np.eye(4)
+
+    transform[0, 3] = (aabb[3] + aabb[0]) / 2
+    transform[1, 3] = (aabb[4] + aabb[1]) / 2
+    transform[2, 3] = (aabb[5] + aabb[2]) / 2
+
+    box = trimesh.primitives.Box(extents=(x_l, y_l, z_l), transform=transform).as_outline()
     box.colors = np.array([[128, 128, 128]] * len(box.entities))
     objects = [axes, box]
 
@@ -55,7 +65,7 @@ def visualize_poses(poses, size=0.1):
     trimesh.Scene(objects).show()
 
 
-def rand_poses(size, device, radius=1, theta_range=[np.pi/3, 2*np.pi/3], phi_range=[0, 2*np.pi]):
+def rand_poses(size, device, radius=1, theta_range=[np.pi / 3, 2 * np.pi / 3], phi_range=[0, 2 * np.pi]):
     ''' generate random poses from an orbit camera
     Args:
         size: batch size of generated poses.
@@ -66,7 +76,7 @@ def rand_poses(size, device, radius=1, theta_range=[np.pi/3, 2*np.pi/3], phi_ran
     Return:
         poses: [size, 4, 4]
     '''
-    
+
     def normalize(vectors):
         return vectors / (torch.norm(vectors, dim=-1, keepdim=True) + 1e-10)
 
@@ -77,11 +87,12 @@ def rand_poses(size, device, radius=1, theta_range=[np.pi/3, 2*np.pi/3], phi_ran
         radius * torch.sin(thetas) * torch.sin(phis),
         radius * torch.cos(thetas),
         radius * torch.sin(thetas) * torch.cos(phis),
-    ], dim=-1) # [B, 3]
+    ], dim=-1)  # [B, 3]
 
     # lookat
     forward_vector = - normalize(centers)
-    up_vector = torch.FloatTensor([0, -1, 0]).to(device).unsqueeze(0).repeat(size, 1) # confused at the coordinate system...
+    up_vector = torch.FloatTensor([0, -1, 0]).to(device).unsqueeze(0).repeat(size,
+                                                                             1)  # confused at the coordinate system...
     right_vector = normalize(torch.cross(forward_vector, up_vector, dim=-1))
     up_vector = normalize(torch.cross(right_vector, forward_vector, dim=-1))
 
@@ -95,17 +106,18 @@ def rand_poses(size, device, radius=1, theta_range=[np.pi/3, 2*np.pi/3], phi_ran
 class NeRFDataset:
     def __init__(self, opt, device, type='train', downscale=1, n_test=10):
         super().__init__()
-        
+
         self.opt = opt
         self.device = device
-        self.type = type # train, val, test
+        self.type = type  # train, val, test
         self.downscale = downscale
         self.root_path = opt.path
-        self.preload = opt.preload # preload data into GPU
-        self.scale = opt.scale # camera radius scale to make sure camera are inside the bounding box.
-        self.offset = opt.offset # camera offset
-        self.bound = opt.bound # bounding box half length, also used as the radius to random sample poses.
-        self.fp16 = opt.fp16 # if preload, load into fp16.
+        self.preload = opt.preload  # preload data into GPU
+        self.scale = opt.scale  # camera radius scale to make sure camera are inside the bounding box.
+        self.offset = opt.offset  # camera offset
+        self.bound = opt.bound  # bounding box half length, also used as the radius to random sample poses.
+        self.aabb_box = opt.aabb_box
+        self.fp16 = opt.fp16  # if preload, load into fp16.
 
         self.training = self.type in ['train', 'all', 'trainval']
         self.num_rays = self.opt.num_rays if self.training else -1
@@ -117,9 +129,9 @@ class NeRFDataset:
 
         # auto-detect transforms.json and split mode.
         if os.path.exists(os.path.join(self.root_path, 'transforms.json')):
-            self.mode = 'colmap' # manually split, use view-interpolation for test.
+            self.mode = 'colmap'  # manually split, use view-interpolation for test.
         elif os.path.exists(os.path.join(self.root_path, 'transforms_train.json')):
-            self.mode = 'blender' # provided split
+            self.mode = 'blender'  # provided split
         else:
             raise NotImplementedError(f'[NeRFDataset] Cannot find transforms*.json under {self.root_path}')
 
@@ -161,15 +173,15 @@ class NeRFDataset:
         else:
             # we have to actually read an image to get H and W later.
             self.H = self.W = None
-        
+
         # read images
         frames = transform["frames"]
-        #frames = sorted(frames, key=lambda d: d['file_path']) # why do I sort...
-        
+        # frames = sorted(frames, key=lambda d: d['file_path']) # why do I sort...
+
         # for colmap, manually interpolate a test set.
         """"
         if self.mode == 'colmap' and type == 'test':
-            
+
             # choose two random poses, and interpolate between.
             f0, f1 = np.random.choice(frames, 2, replace=False)
             pose0 = nerf_matrix_to_ngp(np.array(f0['transform_matrix'], dtype=np.float32), scale=self.scale, offset=self.offset) # [4, 4]
@@ -187,17 +199,16 @@ class NeRFDataset:
                 self.poses.append(pose)
         """
 
-        #else:
+        # else:
         # for colmap, manually split a valid set (the first frame). Set for fox dataset
         if self.mode == 'colmap':
             if type == 'train':
-                frames = frames[5:]#frames[0:14]
+                frames = frames[1:]  # frames[0:14]
             elif type == 'val':
-                frames = frames[:1]#frames[14:16]
+                frames = frames[:1]  # frames[14:16]
             # else 'all' or 'trainval' : use all frames
             elif type == 'test':
                 frames = frames[1:5]
-
 
         self.poses = []
         self.images = []
@@ -205,16 +216,16 @@ class NeRFDataset:
         for f in tqdm.tqdm(frames, desc=f'Loading {type} data'):
             f_path = os.path.join(self.root_path, f['file_path'])
             if self.mode == 'blender' and '.' not in os.path.basename(f_path):
-                f_path += '.png' # so silly...
+                f_path += '.png'  # so silly...
 
             # there are non-exist paths in fox...
             if not os.path.exists(f_path):
                 continue
 
-            pose = np.array(f['transform_matrix'], dtype=np.float32) # [4, 4]
+            pose = np.array(f['transform_matrix'], dtype=np.float32)  # [4, 4]
             pose = nerf_matrix_to_ngp(pose, scale=self.scale, offset=self.offset)
 
-            image = cv2.imread(f_path, cv2.IMREAD_UNCHANGED) # [H, W, 3] o [H, W, 4]
+            image = cv2.imread(f_path, cv2.IMREAD_UNCHANGED)  # [H, W, 3] o [H, W, 4]
             if self.H is None or self.W is None:
                 self.H = image.shape[0] // downscale
                 self.W = image.shape[1] // downscale
@@ -228,7 +239,7 @@ class NeRFDataset:
 
                     for i in range(1536):
                         for j in range(2048):
-                            image[i,j] = int(image[i,j]/1.8)
+                            image[i, j] = int(image[i, j] / 1.8)
                     image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGBA)
                 else:
                     image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
@@ -240,15 +251,14 @@ class NeRFDataset:
             if image.shape[0] != self.H or image.shape[1] != self.W:
                 image = cv2.resize(image, (self.W, self.H), interpolation=cv2.INTER_AREA)
 
-            image = image.astype(np.float32) / 255 # [H, W, 3/4]
+            image = image.astype(np.float32) / 255  # [H, W, 3/4]
 
             self.poses.append(pose)
             self.images.append(image)
 
-
         # few shot
         if type == 'train' and self.opt.few_shot > 0 and self.opt.few_shot < len(self.images):
-            if self.opt.few_shot == 8: # NeRF-Synthetic
+            if self.opt.few_shot == 8:  # NeRF-Synthetic
                 indicies = [26, 86, 2, 55, 75, 93, 16, 73]
                 self.images = [self.images[i] for i in indicies]
                 self.poses = [self.poses[i] for i in indicies]
@@ -264,23 +274,23 @@ class NeRFDataset:
             self.images = [self.images[i] for i in idx_sub]
             self.poses = [self.poses[i] for i in idx_sub]
 
-            
-        self.poses = torch.from_numpy(np.stack(self.poses, axis=0)) # [N, 4, 4]
+        self.poses = torch.from_numpy(np.stack(self.poses, axis=0))  # [N, 4, 4]
         if self.images is not None:
-            self.images = torch.from_numpy(np.stack(self.images, axis=0)) # [N, H, W, C]
-        
+            self.images = torch.from_numpy(np.stack(self.images, axis=0))  # [N, H, W, C]
+
         # calculate mean radius of all camera poses
         self.radius = self.poses[:, :3, 3].norm(dim=-1).mean(0).item()
-        #print(f'[INFO] dataset camera poses: radius = {self.radius:.4f}, bound = {self.bound}')
+        # print(f'[INFO] dataset camera poses: radius = {self.radius:.4f}, bound = {self.bound}')
 
         # initialize error_map
         if self.training and self.opt.error_map:
-            self.error_map = torch.ones([self.images.shape[0], 128 * 128], dtype=torch.float) # [B, 128 * 128], flattened for easy indexing, fixed resolution...
+            self.error_map = torch.ones([self.images.shape[0], 128 * 128],
+                                        dtype=torch.float)  # [B, 128 * 128], flattened for easy indexing, fixed resolution...
         else:
             self.error_map = None
 
         # [debug] uncomment to view all training poses.
-        # visualize_poses(self.poses.numpy())
+        #visualize_poses(self.poses.numpy(), self.aabb_box)
 
         # [debug] uncomment to view examples of randomly generated poses.
         # visualize_poses(rand_poses(100, self.device, radius=self.radius).cpu().numpy())
@@ -315,18 +325,16 @@ class NeRFDataset:
 
         self.intrinsics = np.array([fl_x, fl_y, cx, cy])
 
-
     def collate(self, index):
 
-        B = len(index) # a list of length 1
+        B = len(index)  # a list of length 1
 
         # random pose without gt images.
         if self.rand_pose == 0 or index[0] >= len(self.poses):
-
             poses = rand_poses(B, self.device, radius=self.radius)
 
             # sample a low-resolution but full image for CLIP
-            s = np.sqrt(self.H * self.W / self.num_rays) # only in training, assert num_rays > 0
+            s = np.sqrt(self.H * self.W / self.num_rays)  # only in training, assert num_rays > 0
             rH, rW = int(self.H / s), int(self.W / s)
             rays = get_rays(poses, self.intrinsics / s, rH, rW, -1)
 
@@ -334,10 +342,10 @@ class NeRFDataset:
                 'H': rH,
                 'W': rW,
                 'rays_o': rays['rays_o'],
-                'rays_d': rays['rays_d'],    
+                'rays_d': rays['rays_d'],
             }
 
-        poses = self.poses[index].to(self.device) # [B, 4, 4]
+        poses = self.poses[index].to(self.device)  # [B, 4, 4]
 
         error_map = None if self.error_map is None else self.error_map[index]
 
@@ -346,7 +354,7 @@ class NeRFDataset:
         else:
             rays = get_rays(poses, self.intrinsics, self.H, self.W, self.num_rays, error_map, self.opt.patch_size)
 
-        #rays = self.adjust_rays_to_ndc(rays, self.intrinsics[0], self.W, self.H)
+        # rays = self.adjust_rays_to_ndc(rays, self.intrinsics[0], self.W, self.H)
 
         results = {
             'H': self.H,
@@ -356,13 +364,13 @@ class NeRFDataset:
         }
 
         if self.images is not None:
-            images = self.images[index].to(self.device) # [B, H, W, 3/4]
+            images = self.images[index].to(self.device)  # [B, H, W, 3/4]
             if self.training:
                 C = images.shape[-1]
-                images = torch.gather(images.view(B, -1, C), 1, torch.stack(C * [rays['inds']], -1)) # [B, N, 3/4]
+                images = torch.gather(images.view(B, -1, C), 1, torch.stack(C * [rays['inds']], -1))  # [B, N, 3/4]
             results['images'] = images
             results['cam_id'] = index
-        
+
         # need inds to update error_map
         if error_map is not None:
             results['index'] = index
@@ -371,29 +379,37 @@ class NeRFDataset:
         # entropy and gain loss
         if self.type == 'train':
             if self.opt.smoothing:
-                for pose in poses: # only one pose
+                for pose in poses:  # only one pose
                     if self.opt.smooth_sampling_method == 'near_pixel':
                         pose = pose[..., None, :, :]
-                        near_inds = get_near_pixel(rays['inds'], self.opt.smooth_pixel_range, self.H, self.W, self.device)
-                        near_rays = get_rays(pose, self.intrinsics, self.H, self.W, self.num_rays, patch_size=self.opt.patch_size, ray_inds=near_inds)
+                        near_inds = get_near_pixel(rays['inds'], self.opt.smooth_pixel_range, self.H, self.W,
+                                                   self.device)
+                        near_rays = get_rays(pose, self.intrinsics, self.H, self.W, self.num_rays,
+                                             patch_size=self.opt.patch_size, ray_inds=near_inds)
                     else:
-                        near_pose = self.get_near_c2w(pose[:3, :4]) # take pose without [0,0,0,1]
-                        near_pose = torch.cat([near_pose[None, ...], pose[None, 3:4, :4]], 1) # necessary for tensor dimensionality in get_rays
-                        near_rays = get_rays(near_pose, self.intrinsics, self.H, self.W, self.num_rays, patch_size=self.opt.patch_size, ray_inds=rays['inds'])
+                        near_pose = self.get_near_c2w(pose[:3, :4])  # take pose without [0,0,0,1]
+                        near_pose = torch.cat([near_pose[None, ...], pose[None, 3:4, :4]],
+                                              1)  # necessary for tensor dimensionality in get_rays
+                        near_rays = get_rays(near_pose, self.intrinsics, self.H, self.W, self.num_rays,
+                                             patch_size=self.opt.patch_size, ray_inds=rays['inds'])
 
             if self.opt.entropy and (self.opt.N_entropy != 0):
-                rays_entropy = get_rays(poses, self.intrinsics, self.H, self.W, self.opt.N_entropy, patch_size=self.opt.patch_size)
+                rays_entropy = get_rays(poses, self.intrinsics, self.H, self.W, self.opt.N_entropy,
+                                        patch_size=self.opt.patch_size)
                 if self.opt.smoothing:
                     for pose in poses:
                         if self.opt.smooth_sampling_method == 'near_pixel':
                             pose = pose[..., None, :, :]
-                            near_inds = get_near_pixel(rays_entropy['inds'], self.opt.smooth_pixel_range, self.H, self.W,
+                            near_inds = get_near_pixel(rays_entropy['inds'], self.opt.smooth_pixel_range, self.H,
+                                                       self.W,
                                                        self.device)
-                            ent_near_rays = get_rays(pose, self.intrinsics, self.H, self.W, self.opt.N_entropy, patch_size=self.opt.patch_size, ray_inds=near_inds)
+                            ent_near_rays = get_rays(pose, self.intrinsics, self.H, self.W, self.opt.N_entropy,
+                                                     patch_size=self.opt.patch_size, ray_inds=near_inds)
                         else:
                             ent_near_pose = self.get_near_c2w(pose[:3, :4])
                             ent_near_pose = torch.cat([ent_near_pose[None, ...], pose[None, 3:4, :4]], 1)
-                            ent_near_rays = get_rays(ent_near_pose, self.intrinsics, self.H, self.W, self.opt.N_entropy, patch_size=self.opt.patch_size, ray_inds=rays_entropy['inds'])
+                            ent_near_rays = get_rays(ent_near_pose, self.intrinsics, self.H, self.W, self.opt.N_entropy,
+                                                     patch_size=self.opt.patch_size, ray_inds=rays_entropy['inds'])
 
             if self.opt.entropy and (self.opt.N_entropy != 0):
                 results['rays_o'] = torch.cat([results['rays_o'], rays_entropy['rays_o']], 1)
@@ -414,9 +430,10 @@ class NeRFDataset:
     def dataloader(self):
         size = len(self.poses)
         if self.training and self.rand_pose > 0:
-            size += size // self.rand_pose # index >= size means we use random pose.
-        loader = DataLoader(list(range(size)), batch_size=1, collate_fn=self.collate, shuffle=self.training, num_workers=0)
-        loader._data = self # an ugly fix... we need to access error_map & poses in trainer.
+            size += size // self.rand_pose  # index >= size means we use random pose.
+        loader = DataLoader(list(range(size)), batch_size=1, collate_fn=self.collate, shuffle=self.training,
+                            num_workers=0)
+        loader._data = self  # an ugly fix... we need to access error_map & poses in trainer.
         loader.has_gt = self.images is not None
         return loader
 
@@ -494,11 +511,10 @@ class NeRFDataset:
 
         return origins_ndc, directions_ndc
 
-
     def adjust_rays_to_ndc(self, rays, focal, width, height):
         ndc_origins, ndc_directions = self.convert_to_ndc(rays['rays_o'],
-                                                   rays['rays_d'],
-                                                   focal, width, height)
+                                                          rays['rays_d'],
+                                                          focal, width, height)
 
         """"
         mat = ndc_origins
@@ -521,13 +537,13 @@ class NeRFDataset:
           near=ones * self.near,
           far=ones * self.far)
         """
-        result={}
-        ndc_origins=ndc_origins[None, ...]
-        ndc_directions=ndc_directions[None, ...]
+        result = {}
+        ndc_origins = ndc_origins[None, ...]
+        ndc_directions = ndc_directions[None, ...]
 
-        result['rays_o']=torch.from_numpy(ndc_origins).to(device=self.device)
-        result['rays_d']=torch.from_numpy(ndc_directions).to(device=self.device)
+        result['rays_o'] = torch.from_numpy(ndc_origins).to(device=self.device)
+        result['rays_d'] = torch.from_numpy(ndc_directions).to(device=self.device)
         if 'inds' in rays:
-            result['inds']=rays['inds']
+            result['inds'] = rays['inds']
 
         return result
